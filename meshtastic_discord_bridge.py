@@ -30,7 +30,23 @@ def onReceiveMesh(packet, interface):
     try:
         if 'decoded' in packet: 
             if packet['decoded']['portnum']=='TEXT_MESSAGE_APP': #only interest in text packets for now
-                meshtodiscord.put("Node "+packet['fromId']+" writes to node "+packet['toId']+ " this message: " +packet['decoded']['text'])
+                from_id = str(packet.get('fromId', 'unknown'))
+                to_id = str(packet.get('toId', 'unknown'))
+                text = str(packet['decoded'].get('text', ''))
+                longname = from_id
+                try:
+                    for node in interface.nodes.values():
+                        if str(node.get('user', {}).get('id', '')) == from_id:
+                            longname = str(node.get('user', {}).get('longName', from_id))
+                            break
+                except Exception:
+                    pass
+                meshtodiscord.put({
+                    'longname': longname,
+                    'node_id': from_id,
+                    'channel': to_id,
+                    'text': text,
+                })
 #    App was occasionally failing where packet['fromId'] was nonetype, let's see if catching all exceptions helps
 #    except KeyError as e: #catch empty packet
 #        pass
@@ -91,7 +107,7 @@ class MyClient(discord.Client):
     async def my_background_task(self):
         await self.wait_until_ready()
         counter = 0
-        nodelist=""
+        active_nodes = []
         channel = self.get_channel(channel_id) 
         pub.subscribe(onReceiveMesh, "meshtastic.receive")
         pub.subscribe(onConnectionMesh, "meshtastic.connection.established")
@@ -111,7 +127,7 @@ class MyClient(discord.Client):
             #print(counter)
             if (counter%12==1):
                 #approx 1 minute (every 12th call, call every 5 seconds), refresh node list
-                nodelist="Node list:\n"
+                active_nodes = []
                 nodes=iface.nodes
                 for node in nodes:
                     try:
@@ -125,22 +141,33 @@ class MyClient(discord.Client):
                             if "snr" in nodes[node]:
                                 snr = str(nodes[node]['snr'])
                             else:
-                                snr="?"
+                                snr="N/A"
                             if "lastHeard" in nodes[node]:
                                 ts=int(nodes[node]['lastHeard'])
                                 timestr = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
                             else:
                                 #Just make it old so it doesn't show, only interested in nodes we know are active
                                 #Use this if you want to assign a time in the past: ts=time.time()-(16*60)
-                                timestr="Unknown"
-                            #Use this if you want to filter on time: if ts>time.time()-(15*60):
-                            nodelist=nodelist+"\nid:"+id + ", num:"+num+", longname:" + longname + ", hops:" + hopsaway + ", snr:"+snr+", lastheardutc:"+timestr 
+                                timestr="Never"
+                            if "lastHeard" in nodes[node] and ts > time.time()-(15*60):
+                                active_nodes.append({
+                                    'id': id,
+                                    'num': num,
+                                    'longname': longname,
+                                    'hopsaway': hopsaway,
+                                    'snr': snr,
+                                    'lastheardutc': timestr,
+                                })
                     except KeyError as e:
                         print(e)
                         pass
             try:
                 meshmessage=meshtodiscord.get_nowait()
-                await channel.send(meshmessage)
+                msg = (
+                    f"📻 **{meshmessage['longname']}** (`{meshmessage['node_id']}`) → `{meshmessage['channel']}`\n"
+                    f"{meshmessage['text']}"
+                )
+                await channel.send(msg)
                 meshtodiscord.task_done()
             except queue.Empty:
                 pass
@@ -156,16 +183,23 @@ class MyClient(discord.Client):
                 pass
             try:
                 nodelistq.get_nowait()
-                #if there's any item on this queue, we'll send the nodelist
-                lines=nodelist.splitlines()
-                packet=""
-                for index,line in enumerate(lines):
-                    if len(packet)+len(line) < 1900:
-                        packet=packet+line+"\n"
-                    else:
-                        await channel.send(packet)
-                        packet=line+"\n"
-                await channel.send(packet)
+                #if there's any item on this queue, we'll send the node list as embeds
+                if not active_nodes:
+                    await channel.send(embed=discord.Embed(
+                        title="🟢 Active Nodes",
+                        description="No active nodes found in the last 15 minutes.",
+                        color=0x00ff99,
+                    ))
+                else:
+                    for offset in range(0, len(active_nodes), 25):
+                        embed = discord.Embed(title="🟢 Active Nodes", color=0x00ff99)
+                        for node in active_nodes[offset:offset + 25]:
+                            embed.add_field(
+                                name=f"📡 {node['longname']} (`{node['id']}`)",
+                                value=f"SNR: `{node['snr']}` | Last heard: `{node['lastheardutc']}`",
+                                inline=False,
+                            )
+                        await channel.send(embed=embed)
                 nodelistq.task_done()
             except queue.Empty:
                 pass
