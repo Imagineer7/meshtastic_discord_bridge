@@ -14,6 +14,8 @@ Get a Discord Bot account and invite the bot to a server.  [Instructions](https:
 
 Fill in the values for your environment in sampledotenvfile, and rename to .env 
 
+If you want private or non-primary Meshtastic messages to go to a separate Discord channel, set `DISCORD_SECONDARY_CHANNEL_ID` as well.
+
 If you connect to your mesh device via TCP, specify the hostname in MESHTASTIC_HOSTNAME.  If no hostname is specified, a serial interface is assumed.
 
 ```
@@ -29,6 +31,8 @@ You can now interact with Meshtastic through Discord.
 $sendprimary <message> sends a message up to 225 characters to the the primary channel
 $send nodenum=########### <message> sends a message up to 225 characters to nodenum ###########
 $activenodes will list all nodes seen in the last 15 minutes
+
+If `DISCORD_SECONDARY_CHANNEL_ID` is set, messages sent to a non-primary Meshtastic destination will be forwarded there instead of the primary Discord channel.
 ```
 
 ## Screenshot

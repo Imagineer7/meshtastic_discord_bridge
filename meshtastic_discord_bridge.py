@@ -15,6 +15,8 @@ from datetime import datetime
 load_dotenv()
 token = os.getenv("DISCORD_TOKEN")
 channel_id = int(os.getenv("DISCORD_CHANNEL_ID"))
+secondary_channel_id = os.getenv("DISCORD_SECONDARY_CHANNEL_ID")
+secondary_channel_id = int(secondary_channel_id) if secondary_channel_id else None
 meshtastic_hostname = os.getenv("MESHTASTIC_HOSTNAME")
 
 meshtodiscord = queue.Queue()
@@ -44,7 +46,7 @@ def onReceiveMesh(packet, interface):
                 meshtodiscord.put({
                     'longname': longname,
                     'node_id': from_id,
-                    'channel': to_id,
+                    'to_id': to_id,
                     'text': text,
                 })
 #    App was occasionally failing where packet['fromId'] was nonetype, let's see if catching all exceptions helps
@@ -78,7 +80,8 @@ class MyClient(discord.Client):
             helpmessage="Meshtastic Discord Bridge is up.  Command list:\n"\
                 "$sendprimary <message> sends a message up to 225 characters to the the primary channel\n"\
                 "$send nodenum=########### <message> sends a message up to 225 characters to nodenum ###########\n"\
-                "$activenodes will list all nodes seen in the last 15 minutes"
+                "$activenodes will list all nodes seen in the last 15 minutes\n"\
+                "Set DISCORD_SECONDARY_CHANNEL_ID to forward non-primary mesh messages to another Discord channel"
             await message.channel.send(helpmessage)
 
         if message.content.startswith('$sendprimary'):
@@ -108,7 +111,15 @@ class MyClient(discord.Client):
         await self.wait_until_ready()
         counter = 0
         active_nodes = []
-        channel = self.get_channel(channel_id) 
+        primary_channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
+        secondary_channel = None
+        if secondary_channel_id:
+            secondary_channel = self.get_channel(secondary_channel_id)
+            if secondary_channel is None:
+                try:
+                    secondary_channel = await self.fetch_channel(secondary_channel_id)
+                except Exception:
+                    secondary_channel = None
         pub.subscribe(onReceiveMesh, "meshtastic.receive")
         pub.subscribe(onConnectionMesh, "meshtastic.connection.established")
         try:
@@ -163,8 +174,11 @@ class MyClient(discord.Client):
                         pass
             try:
                 meshmessage=meshtodiscord.get_nowait()
+                channel = primary_channel if meshmessage['to_id'] == '^all' else secondary_channel
+                if channel is None:
+                    channel = primary_channel
                 msg = (
-                    f"📻 **{meshmessage['longname']}** (`{meshmessage['node_id']}`) → `{meshmessage['channel']}`\n"
+                    f"📻 **{meshmessage['longname']}** (`{meshmessage['node_id']}`) → `{meshmessage['to_id']}`\n"
                     f"{meshmessage['text']}"
                 )
                 await channel.send(msg)
