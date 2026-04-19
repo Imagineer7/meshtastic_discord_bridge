@@ -1,6 +1,8 @@
 DISCORD_TOKEN=""
 DISCORD_CHANNEL_ID=""
 DISCORD_SECONDARY_CHANNEL_ID=""
+#Mesh channel index treated as "primary" for Discord primary channel routing (usually 0)
+MESHTASTIC_PRIMARY_CHANNEL_INDEX="0"
 #If you are connecting to your mesh device by IP/hostname, enter the hostname here
 #If not, a serial interface is assumed
 MESHTASTIC_HOSTNAME=""

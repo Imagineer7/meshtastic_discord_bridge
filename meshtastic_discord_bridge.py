@@ -17,6 +17,7 @@ token = os.getenv("DISCORD_TOKEN")
 channel_id = int(os.getenv("DISCORD_CHANNEL_ID"))
 secondary_channel_id = os.getenv("DISCORD_SECONDARY_CHANNEL_ID")
 secondary_channel_id = int(secondary_channel_id) if secondary_channel_id else None
+primary_mesh_channel_index = int(os.getenv("MESHTASTIC_PRIMARY_CHANNEL_INDEX", "0"))
 meshtastic_hostname = os.getenv("MESHTASTIC_HOSTNAME")
 
 meshtodiscord = queue.Queue()
@@ -47,6 +48,7 @@ def onReceiveMesh(packet, interface):
                     'longname': longname,
                     'node_id': from_id,
                     'to_id': to_id,
+                    'channel_index': packet.get('channel'),
                     'text': text,
                 })
 #    App was occasionally failing where packet['fromId'] was nonetype, let's see if catching all exceptions helps
@@ -120,6 +122,14 @@ class MyClient(discord.Client):
                     secondary_channel = await self.fetch_channel(secondary_channel_id)
                 except Exception:
                     secondary_channel = None
+        print(
+            "Routing config: "
+            + f"primary_discord_channel={channel_id}, "
+            + f"secondary_discord_channel={secondary_channel_id}, "
+            + f"primary_mesh_channel_index={primary_mesh_channel_index}"
+        )
+        if secondary_channel_id and secondary_channel is None:
+            print("Warning: DISCORD_SECONDARY_CHANNEL_ID is set, but bot could not access that channel. Falling back to primary channel.")
         pub.subscribe(onReceiveMesh, "meshtastic.receive")
         pub.subscribe(onConnectionMesh, "meshtastic.connection.established")
         try:
@@ -174,11 +184,30 @@ class MyClient(discord.Client):
                         pass
             try:
                 meshmessage=meshtodiscord.get_nowait()
-                channel = primary_channel if meshmessage['to_id'] == '^all' else secondary_channel
+                channel_index = meshmessage.get('channel_index')
+                try:
+                    channel_index = int(channel_index) if channel_index is not None else None
+                except (TypeError, ValueError):
+                    channel_index = None
+
+                is_primary_mesh_channel = channel_index == primary_mesh_channel_index if channel_index is not None else meshmessage['to_id'] == '^all'
+                channel = primary_channel if is_primary_mesh_channel else secondary_channel
                 if channel is None:
                     channel = primary_channel
+                route_name = "primary"
+                if channel == secondary_channel and secondary_channel is not None:
+                    route_name = "secondary"
+                print(
+                    "Routing incoming mesh message: "
+                    + f"from={meshmessage['node_id']}, "
+                    + f"to_id={meshmessage['to_id']}, "
+                    + f"channel_index={channel_index}, "
+                    + f"route={route_name}"
+                )
                 msg = (
-                    f"📻 **{meshmessage['longname']}** (`{meshmessage['node_id']}`) → `{meshmessage['to_id']}`\n"
+                    f"📻 **{meshmessage['longname']}** (`{meshmessage['node_id']}`) → `{meshmessage['to_id']}`"
+                    + (f" (ch {channel_index})" if channel_index is not None else "")
+                    + "\n"
                     f"{meshmessage['text']}"
                 )
                 await channel.send(msg)
@@ -199,7 +228,7 @@ class MyClient(discord.Client):
                 nodelistq.get_nowait()
                 #if there's any item on this queue, we'll send the node list as embeds
                 if not active_nodes:
-                    await channel.send(embed=discord.Embed(
+                    await primary_channel.send(embed=discord.Embed(
                         title="🟢 Active Nodes",
                         description="No active nodes found in the last 15 minutes.",
                         color=0x00ff99,
@@ -213,7 +242,7 @@ class MyClient(discord.Client):
                                 value=f"SNR: `{node['snr']}` | Last heard: `{node['lastheardutc']}`",
                                 inline=False,
                             )
-                        await channel.send(embed=embed)
+                        await primary_channel.send(embed=embed)
                 nodelistq.task_done()
             except queue.Empty:
                 pass
