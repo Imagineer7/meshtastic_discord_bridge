@@ -49,6 +49,8 @@ def find_node(nodes_snapshot, query):
 meshtodiscord = queue.Queue()
 discordtomesh = queue.Queue()
 nodelistq = queue.Queue()
+all_nodes = []
+nodes_lock = threading.Lock()
 
 def onConnectionMesh(interface, topic=pub.AUTO_TOPIC):  
     """called when we (re)connect to the meshtastic radio"""
@@ -138,7 +140,6 @@ class MyClient(discord.Client):
     async def my_background_task(self):
         await self.wait_until_ready()
         counter = 0
-        active_nodes = []
         primary_channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
         secondary_channel = None
         if secondary_channel_id:
@@ -173,41 +174,39 @@ class MyClient(discord.Client):
             #Helpful to uncomment this print counter if you need to know if this task is still running
             #print(counter)
             if (counter%12==1):
-                #approx 1 minute (every 12th call, call every 5 seconds), refresh node list
-                active_nodes = []
-                nodes=iface.nodes
-                for node in nodes:
+                global all_nodes
+                iface_nodes = iface.nodes
+                new_nodes = []
+                for node in iface_nodes:
                     try:
-                            id = str(nodes[node]['user']['id'])
-                            num = str(nodes[node]['num'])
-                            longname = str(nodes[node]['user']['longName'])
-                            if "hopsAway" in nodes[node]:
-                                hopsaway = str(nodes[node]['hopsAway'])
-                            else:
-                                hopsaway="0"
-                            if "snr" in nodes[node]:
-                                snr = str(nodes[node]['snr'])
-                            else:
-                                snr="N/A"
-                            if "lastHeard" in nodes[node]:
-                                ts=int(nodes[node]['lastHeard'])
-                                timestr = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
-                            else:
-                                #Just make it old so it doesn't show, only interested in nodes we know are active
-                                #Use this if you want to assign a time in the past: ts=time.time()-(16*60)
-                                timestr="Never"
-                            if "lastHeard" in nodes[node] and ts > time.time()-(15*60):
-                                active_nodes.append({
-                                    'id': id,
-                                    'num': num,
-                                    'longname': longname,
-                                    'hopsaway': hopsaway,
-                                    'snr': snr,
-                                    'lastheardutc': timestr,
-                                })
+                        node_id = str(iface_nodes[node]['user']['id'])
+                        num = str(iface_nodes[node]['num'])
+                        longname = str(iface_nodes[node]['user']['longName'])
+                        hopsaway = str(iface_nodes[node].get('hopsAway', 0))
+                        snr = str(iface_nodes[node]['snr']) if 'snr' in iface_nodes[node] else 'N/A'
+                        if 'lastHeard' in iface_nodes[node]:
+                            ts = int(iface_nodes[node]['lastHeard'])
+                            timestr = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+                        else:
+                            ts = 0
+                            timestr = 'Never'
+                        lat, lon, alt = parse_position(iface_nodes[node])
+                        new_nodes.append({
+                            'id': node_id,
+                            'num': num,
+                            'longname': longname,
+                            'hopsaway': hopsaway,
+                            'snr': snr,
+                            'lastheardutc': timestr,
+                            'ts': ts,
+                            'lat': lat,
+                            'lon': lon,
+                            'alt': alt,
+                        })
                     except KeyError as e:
                         print(e)
-                        pass
+                with nodes_lock:
+                    all_nodes = new_nodes
             try:
                 meshmessage=meshtodiscord.get_nowait()
                 channel_index = meshmessage.get('channel_index')
