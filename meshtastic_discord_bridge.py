@@ -22,6 +22,20 @@ secondary_channel_id = int(secondary_channel_id) if secondary_channel_id else No
 primary_mesh_channel_index = int(os.getenv("MESHTASTIC_PRIMARY_CHANNEL_INDEX", "0"))
 meshtastic_hostname = os.getenv("MESHTASTIC_HOSTNAME")
 
+
+def parse_position(node):
+    pos = node.get('position') or {}
+    lat = pos.get('latitude')
+    lon = pos.get('longitude')
+    if lat is None and 'latitudeI' in pos:
+        lat = pos['latitudeI'] * 1e-7
+    if lon is None and 'longitudeI' in pos:
+        lon = pos['longitudeI'] * 1e-7
+    if lat is None or lon is None:
+        return None, None, None
+    return lat, lon, pos.get('altitude')
+
+
 meshtodiscord = queue.Queue()
 discordtomesh = queue.Queue()
 nodelistq = queue.Queue()
