@@ -11,6 +11,8 @@ import meshtastic.serial_interface
 import queue
 import time
 from datetime import datetime
+import threading
+from flask import Flask, jsonify
 
 load_dotenv()
 token = os.getenv("DISCORD_TOKEN")
@@ -248,8 +250,9 @@ class MyClient(discord.Client):
                 pass
             await asyncio.sleep(5) 
         
-intents=discord.Intents.default()
-intents.message_content = True
-
-client = MyClient(intents=intents)
-client.run(token)
+if __name__ == '__main__':
+    start_map_server()
+    intents = discord.Intents.default()
+    intents.message_content = True
+    client = MyClient(intents=intents)
+    client.run(token)
