@@ -36,6 +36,16 @@ def parse_position(node):
     return lat, lon, pos.get('altitude')
 
 
+def find_node(nodes_snapshot, query):
+    query = query.strip()
+    for node in nodes_snapshot:
+        if node['id'].lower() == query.lower():
+            return node
+        if node['num'] == query:
+            return node
+    return None
+
+
 meshtodiscord = queue.Queue()
 discordtomesh = queue.Queue()
 nodelistq = queue.Queue()
