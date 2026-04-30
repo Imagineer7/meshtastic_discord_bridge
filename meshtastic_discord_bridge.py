@@ -85,6 +85,136 @@ def onReceiveMesh(packet, interface):
     except Exception as e:
         print("On receive mesh exception: " + str(e))
         
+MAP_HTML = """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Meshtastic Node Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { display: flex; height: 100vh; font-family: sans-serif; background: #0d0d1a; color: #eee; }
+    #map { flex: 3; }
+    #sidebar {
+      flex: 1; min-width: 220px; max-width: 300px; overflow-y: auto;
+      padding: 12px; background: #111827; border-left: 1px solid #374151;
+    }
+    #sidebar h2 {
+      font-size: 0.9rem; color: #34d399; margin-bottom: 8px;
+      text-transform: uppercase; letter-spacing: 1px;
+    }
+    .node-card {
+      margin-bottom: 6px; padding: 8px; background: #1f2937;
+      border-radius: 6px; font-size: 0.78rem; line-height: 1.5;
+    }
+    .node-name { font-weight: bold; color: #93c5fd; }
+    .node-id   { color: #9ca3af; }
+    #status {
+      position: absolute; bottom: 10px; left: 10px; z-index: 1000;
+      background: rgba(0,0,0,0.65); color: #34d399;
+      padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="sidebar">
+    <h2>No Position Data</h2>
+    <div id="no-pos-list"></div>
+  </div>
+  <div id="status">Loading...</div>
+  <script>
+    const map = L.map('map').setView([20, 0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+    }).addTo(map);
+
+    let markers = [];
+
+    function updateMap() {
+      fetch('/api/nodes')
+        .then(r => r.json())
+        .then(nodes => {
+          markers.forEach(m => map.removeLayer(m));
+          markers = [];
+
+          const noPos = [];
+          nodes.forEach(node => {
+            if (node.lat !== null && node.lon !== null) {
+              const alt = node.alt !== null ? node.alt + 'm' : 'N/A';
+              const popup = `<b>${node.longname}</b> (<code>${node.id}</code>)<br>
+                <b>Num:</b> ${node.num}<br>
+                <b>SNR:</b> ${node.snr}<br>
+                <b>Hops:</b> ${node.hopsaway}<br>
+                <b>Alt:</b> ${alt}<br>
+                <b>Last heard:</b> ${node.lastheardutc}`;
+              const m = L.marker([node.lat, node.lon]).addTo(map).bindPopup(popup);
+              markers.push(m);
+            } else {
+              noPos.push(node);
+            }
+          });
+
+          const list = document.getElementById('no-pos-list');
+          if (noPos.length === 0) {
+            list.innerHTML = '<div style="color:#6b7280;font-size:0.78rem">All nodes have position data.</div>';
+          } else {
+            list.innerHTML = noPos.map(n => `
+              <div class="node-card">
+                <span class="node-name">${n.longname}</span><br>
+                <span class="node-id">${n.id}</span><br>
+                SNR: ${n.snr} &nbsp; Hops: ${n.hopsaway}<br>
+                Last: ${n.lastheardutc}
+              </div>`).join('');
+          }
+
+          document.getElementById('status').textContent =
+            'Updated: ' + new Date().toLocaleTimeString();
+        })
+        .catch(() => {
+          document.getElementById('status').textContent = 'reconnecting…';
+        });
+    }
+
+    updateMap();
+    setInterval(updateMap, 5000);
+  </script>
+</body>
+</html>"""
+
+
+def create_map_app():
+    import logging
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.ERROR)
+
+    app = Flask(__name__)
+
+    @app.route('/api/nodes')
+    def api_nodes():
+        with nodes_lock:
+            snapshot = list(all_nodes)
+        return jsonify(snapshot)
+
+    @app.route('/')
+    def index():
+        return MAP_HTML
+
+    return app
+
+
+def start_map_server():
+    app = create_map_app()
+    thread = threading.Thread(
+        target=app.run,
+        kwargs={'host': '0.0.0.0', 'port': 8765, 'use_reloader': False},
+        daemon=True,
+    )
+    thread.start()
+    print('Map server started at http://0.0.0.0:8765')
+
+
 class MyClient(discord.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

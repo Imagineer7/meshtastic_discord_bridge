@@ -61,3 +61,38 @@ def test_find_node_by_num():
 
 def test_find_node_not_found():
     assert bridge.find_node(SAMPLE_NODES, '!zzz999') is None
+
+
+# ---------------------------------------------------------------------------
+# Flask map server
+# ---------------------------------------------------------------------------
+
+def test_api_nodes_empty():
+    bridge.all_nodes = []
+    app = bridge.create_map_app()
+    client = app.test_client()
+    resp = client.get('/api/nodes')
+    assert resp.status_code == 200
+    assert resp.get_json() == []
+
+
+def test_api_nodes_returns_all_nodes():
+    bridge.all_nodes = list(SAMPLE_NODES)
+    app = bridge.create_map_app()
+    client = app.test_client()
+    resp = client.get('/api/nodes')
+    data = resp.get_json()
+    assert len(data) == 2
+    assert data[0]['id'] == '!abc123'
+    assert data[0]['lat'] == 37.7749
+    assert data[1]['lat'] is None
+
+
+def test_map_page_serves_html():
+    bridge.all_nodes = []
+    app = bridge.create_map_app()
+    client = app.test_client()
+    resp = client.get('/')
+    assert resp.status_code == 200
+    assert b'Meshtastic Node Map' in resp.data
+    assert b'leaflet' in resp.data.lower()
