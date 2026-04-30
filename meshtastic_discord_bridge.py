@@ -111,7 +111,9 @@ class MyClient(discord.Client):
                 "$sendprimary <message> sends a message up to 225 characters to the the primary channel\n"\
                 "$send nodenum=########### <message> sends a message up to 225 characters to nodenum ###########\n"\
                 "$activenodes will list all nodes seen in the last 15 minutes\n"\
-                "Set DISCORD_SECONDARY_CHANNEL_ID to forward non-primary mesh messages to another Discord channel"
+                "$nodeinfo <id> returns full details for a node by hex ID (e.g. !abc123) or node number\n"\
+                "Set DISCORD_SECONDARY_CHANNEL_ID to forward non-primary mesh messages to another Discord channel\n"\
+                "Node map available at http://<your-host>:8765"
             await message.channel.send(helpmessage)
 
         if message.content.startswith('$sendprimary'):
@@ -135,6 +137,34 @@ class MyClient(discord.Client):
 
         if message.content.startswith('$activenodes'):
             nodelistq.put("just pop a message on this queue so we know to send nodelist to discord")
+
+        if message.content.startswith('$nodeinfo'):
+            query = message.content[9:].strip()
+            if not query:
+                await message.channel.send('Usage: `$nodeinfo <hex id or node number>`')
+                return
+            with nodes_lock:
+                snapshot = list(all_nodes)
+            node = find_node(snapshot, query)
+            if node is None:
+                await message.channel.send(f'Node `{query}` not found.')
+                return
+            if node['lat'] is not None:
+                pos = f"{node['lat']:.5f}, {node['lon']:.5f}"
+                if node['alt'] is not None:
+                    pos += f" (alt: {node['alt']}m)"
+            else:
+                pos = 'Not available'
+            embed = discord.Embed(
+                title=f"📡 {node['longname']} ({node['id']})",
+                color=0x00aaff,
+            )
+            embed.add_field(name='Num', value=node['num'], inline=True)
+            embed.add_field(name='Hops away', value=node['hopsaway'], inline=True)
+            embed.add_field(name='SNR', value=node['snr'], inline=True)
+            embed.add_field(name='Last heard (UTC)', value=node['lastheardutc'], inline=False)
+            embed.add_field(name='Position', value=pos, inline=False)
+            await message.channel.send(embed=embed)
 
 
     async def my_background_task(self):
