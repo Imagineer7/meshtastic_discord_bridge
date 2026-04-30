@@ -251,20 +251,28 @@ class MyClient(discord.Client):
                 pass
             try:
                 nodelistq.get_nowait()
-                #if there's any item on this queue, we'll send the node list as embeds
-                if not active_nodes:
+                cutoff = time.time() - (15 * 60)
+                with nodes_lock:
+                    snapshot = list(all_nodes)
+                recent = [n for n in snapshot if n['ts'] > cutoff]
+                if not recent:
                     await primary_channel.send(embed=discord.Embed(
                         title="🟢 Active Nodes",
                         description="No active nodes found in the last 15 minutes.",
                         color=0x00ff99,
                     ))
                 else:
-                    for offset in range(0, len(active_nodes), 25):
+                    for offset in range(0, len(recent), 25):
                         embed = discord.Embed(title="🟢 Active Nodes", color=0x00ff99)
-                        for node in active_nodes[offset:offset + 25]:
+                        for node in recent[offset:offset + 25]:
+                            pos_line = ''
+                            if node['lat'] is not None:
+                                pos_line = f"\n📍 `{node['lat']:.5f}, {node['lon']:.5f}`"
+                                if node['alt'] is not None:
+                                    pos_line += f" (alt: `{node['alt']}m`)"
                             embed.add_field(
                                 name=f"📡 {node['longname']} (`{node['id']}`)",
-                                value=f"SNR: `{node['snr']}` | Last heard: `{node['lastheardutc']}`",
+                                value=f"SNR: `{node['snr']}` | Last heard: `{node['lastheardutc']}`{pos_line}",
                                 inline=False,
                             )
                         await primary_channel.send(embed=embed)
