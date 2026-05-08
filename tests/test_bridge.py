@@ -1,4 +1,14 @@
 import meshtastic_discord_bridge as bridge
+import queue
+
+
+def drain_outbound_queue():
+    while True:
+        try:
+            bridge.discordtomesh.get_nowait()
+            bridge.discordtomesh.task_done()
+        except queue.Empty:
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -94,5 +104,47 @@ def test_map_page_serves_html():
     client = app.test_client()
     resp = client.get('/')
     assert resp.status_code == 200
-    assert b'Meshtastic Node Map' in resp.data
+    assert b'Meshtastic Web Bridge' in resp.data
     assert b'leaflet' in resp.data.lower()
+    assert b'Send To Mesh' in resp.data
+
+
+def test_api_messages_empty():
+    bridge.mesh_messages = []
+    app = bridge.create_map_app()
+    client = app.test_client()
+    resp = client.get('/api/messages')
+    assert resp.status_code == 200
+    assert resp.get_json() == []
+
+
+def test_api_send_primary_message_queues_for_mesh():
+    drain_outbound_queue()
+    bridge.mesh_messages = []
+    app = bridge.create_map_app()
+    client = app.test_client()
+    resp = client.post('/api/messages', json={'message': 'hello mesh'})
+    assert resp.status_code == 202
+    assert resp.get_json()['status'] == 'queued'
+    assert bridge.discordtomesh.get_nowait() == 'hello mesh'
+    assert bridge.mesh_messages[-1]['direction'] == 'outbound'
+    assert bridge.mesh_messages[-1]['to_id'] == '^all'
+
+
+def test_api_send_node_message_queues_destination():
+    drain_outbound_queue()
+    bridge.mesh_messages = []
+    app = bridge.create_map_app()
+    client = app.test_client()
+    resp = client.post('/api/messages', json={'message': 'direct hello', 'destination': '123456789'})
+    assert resp.status_code == 202
+    assert bridge.discordtomesh.get_nowait() == 'nodenum=123456789 direct hello'
+    assert bridge.mesh_messages[-1]['to_id'] == '123456789'
+
+
+def test_api_send_rejects_invalid_messages():
+    app = bridge.create_map_app()
+    client = app.test_client()
+    assert client.post('/api/messages', json={'message': ''}).status_code == 400
+    assert client.post('/api/messages', json={'message': 'x' * 226}).status_code == 400
+    assert client.post('/api/messages', json={'message': 'hello', 'destination': 'abc'}).status_code == 400

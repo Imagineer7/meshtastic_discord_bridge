@@ -1,6 +1,6 @@
 # meshtastic_discord_bridge
 
-A Discord bot which bridges discussions between a Discord channel and a Meshtastic mesh through a locally connected radio. Also hosts a live node map on your LAN.
+A Discord bot which bridges discussions between a Discord channel and a Meshtastic mesh through a locally connected radio. Also hosts a live web bridge with a node map and mesh messaging on your LAN.
 
 ## Requirements
 
@@ -51,9 +51,9 @@ Returns a full detail embed for a single node:
 
 Accepts either the hex node ID (`!abc123`) or the numeric node number. The hex ID lookup is case-insensitive.
 
-## LAN Node Map
+## LAN Web Bridge
 
-When the bridge is running, a live node map is served at:
+When the bridge is running, a live web bridge is served at:
 
 ```
 http://<your-host>:8765
@@ -62,7 +62,10 @@ http://<your-host>:8765
 - Nodes with GPS position are shown as markers on an OpenStreetMap map (no API key required)
 - Click any marker to see a popup with full node details
 - Nodes without position data are listed in a sidebar
+- Incoming mesh text messages are shown in the message feed
+- Send messages to the primary mesh channel or directly to a node number
 - The map auto-refreshes every 5 seconds — no page reload needed
+- The message feed auto-refreshes every 3 seconds
 
 ## Channel Routing
 

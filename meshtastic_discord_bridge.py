@@ -10,9 +10,9 @@ import meshtastic.tcp_interface
 import meshtastic.serial_interface
 import queue
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 import threading
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 load_dotenv()
 token = os.getenv("DISCORD_TOKEN")
@@ -51,6 +51,25 @@ discordtomesh = queue.Queue()
 nodelistq = queue.Queue()
 all_nodes = []
 nodes_lock = threading.Lock()
+mesh_messages = []
+messages_lock = threading.Lock()
+MAX_WEB_MESSAGES = 100
+
+
+def add_mesh_message(message):
+    with messages_lock:
+        message = dict(message)
+        message['id'] = len(mesh_messages) + 1
+        message['timestamputc'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        mesh_messages.append(message)
+        del mesh_messages[:-MAX_WEB_MESSAGES]
+        return message
+
+
+def format_outbound_mesh_message(text, destination=None):
+    if destination is None:
+        return text
+    return "nodenum=" + str(destination) + " " + text
 
 def onConnectionMesh(interface, topic=pub.AUTO_TOPIC):  
     """called when we (re)connect to the meshtastic radio"""
@@ -72,12 +91,18 @@ def onReceiveMesh(packet, interface):
                             break
                 except Exception:
                     pass
-                meshtodiscord.put({
+                meshmessage = {
                     'longname': longname,
                     'node_id': from_id,
                     'to_id': to_id,
                     'channel_index': packet.get('channel'),
                     'text': text,
+                }
+                meshtodiscord.put(meshmessage)
+                add_mesh_message({
+                    **meshmessage,
+                    'direction': 'inbound',
+                    'source': 'mesh',
                 })
 #    App was occasionally failing where packet['fromId'] was nonetype, let's see if catching all exceptions helps
 #    except KeyError as e: #catch empty packet
@@ -89,39 +114,99 @@ MAP_HTML = """<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8"/>
-  <title>Meshtastic Node Map</title>
+  <title>Meshtastic Web Bridge</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { display: flex; height: 100vh; font-family: sans-serif; background: #0d0d1a; color: #eee; }
-    #map { flex: 3; }
+    body {
+      display: grid; grid-template-columns: minmax(0, 1fr) 360px; height: 100vh;
+      font-family: Arial, sans-serif; background: #10141f; color: #f3f4f6;
+    }
+    #map { min-width: 0; }
     #sidebar {
-      flex: 1; min-width: 220px; max-width: 300px; overflow-y: auto;
-      padding: 12px; background: #111827; border-left: 1px solid #374151;
+      display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+      background: #151b26; border-left: 1px solid #2f3a4b;
     }
-    #sidebar h2 {
-      font-size: 0.9rem; color: #34d399; margin-bottom: 8px;
-      text-transform: uppercase; letter-spacing: 1px;
+    .panel { padding: 12px; border-bottom: 1px solid #2f3a4b; }
+    .panel:last-child { border-bottom: 0; }
+    h2 {
+      font-size: 0.78rem; color: #5eead4; margin-bottom: 8px;
+      text-transform: uppercase; letter-spacing: 0.08em;
     }
+    label { display: block; margin-bottom: 5px; color: #cbd5e1; font-size: 0.78rem; }
+    textarea, input, select {
+      width: 100%; border: 1px solid #3e4a5d; border-radius: 6px;
+      background: #0f1724; color: #f8fafc; padding: 8px; font: inherit;
+    }
+    textarea { min-height: 76px; resize: vertical; }
+    select, input { height: 36px; }
+    button {
+      width: 100%; height: 38px; border: 0; border-radius: 6px;
+      background: #14b8a6; color: #042f2e; font-weight: 700; cursor: pointer;
+    }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .field { margin-bottom: 10px; }
+    .inline-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .node-card {
       margin-bottom: 6px; padding: 8px; background: #1f2937;
       border-radius: 6px; font-size: 0.78rem; line-height: 1.5;
     }
     .node-name { font-weight: bold; color: #93c5fd; }
     .node-id   { color: #9ca3af; }
+    #messages { flex: 1; overflow-y: auto; padding: 12px; }
+    .message {
+      margin-bottom: 8px; padding: 9px; border-radius: 6px;
+      background: #20293a; font-size: 0.82rem; line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+    .message.outbound { background: #12363a; }
+    .message-meta { color: #a7b2c4; font-size: 0.72rem; margin-bottom: 4px; }
+    .message-name { color: #93c5fd; font-weight: 700; }
+    .empty { color: #7d8796; font-size: 0.78rem; }
+    #no-pos-list { max-height: 170px; overflow-y: auto; }
+    #send-status { min-height: 17px; color: #5eead4; font-size: 0.76rem; margin-top: 8px; }
     #status {
       position: absolute; bottom: 10px; left: 10px; z-index: 1000;
       background: rgba(0,0,0,0.65); color: #34d399;
       padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; pointer-events: none;
+    }
+    @media (max-width: 760px) {
+      body { grid-template-columns: 1fr; grid-template-rows: 48vh 52vh; }
+      #sidebar { border-left: 0; border-top: 1px solid #2f3a4b; }
     }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <div id="sidebar">
-    <h2>No Position Data</h2>
-    <div id="no-pos-list"></div>
+    <form id="send-form" class="panel">
+      <h2>Send To Mesh</h2>
+      <div class="field">
+        <label for="message">Message</label>
+        <textarea id="message" maxlength="225" required></textarea>
+      </div>
+      <div class="inline-grid">
+        <div class="field">
+          <label for="destination-type">Destination</label>
+          <select id="destination-type">
+            <option value="primary">Primary channel</option>
+            <option value="node">Node number</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="destination-node">Node number</label>
+          <input id="destination-node" inputmode="numeric" pattern="[0-9]*" disabled>
+        </div>
+      </div>
+      <button id="send-button" type="submit">Send</button>
+      <div id="send-status"></div>
+    </form>
+    <div id="messages"></div>
+    <div class="panel">
+      <h2>No Position Data</h2>
+      <div id="no-pos-list"></div>
+    </div>
   </div>
   <div id="status">Loading...</div>
   <script>
@@ -131,6 +216,12 @@ MAP_HTML = """<!DOCTYPE html>
     }).addTo(map);
 
     let markers = [];
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
 
     function updateMap() {
       fetch('/api/nodes')
@@ -143,12 +234,12 @@ MAP_HTML = """<!DOCTYPE html>
           nodes.forEach(node => {
             if (node.lat !== null && node.lon !== null) {
               const alt = node.alt !== null ? node.alt + 'm' : 'N/A';
-              const popup = `<b>${node.longname}</b> (<code>${node.id}</code>)<br>
-                <b>Num:</b> ${node.num}<br>
-                <b>SNR:</b> ${node.snr}<br>
-                <b>Hops:</b> ${node.hopsaway}<br>
-                <b>Alt:</b> ${alt}<br>
-                <b>Last heard:</b> ${node.lastheardutc}`;
+              const popup = `<b>${escapeHtml(node.longname)}</b> (<code>${escapeHtml(node.id)}</code>)<br>
+                <b>Num:</b> ${escapeHtml(node.num)}<br>
+                <b>SNR:</b> ${escapeHtml(node.snr)}<br>
+                <b>Hops:</b> ${escapeHtml(node.hopsaway)}<br>
+                <b>Alt:</b> ${escapeHtml(alt)}<br>
+                <b>Last heard:</b> ${escapeHtml(node.lastheardutc)}`;
               const m = L.marker([node.lat, node.lon]).addTo(map).bindPopup(popup);
               markers.push(m);
             } else {
@@ -162,10 +253,10 @@ MAP_HTML = """<!DOCTYPE html>
           } else {
             list.innerHTML = noPos.map(n => `
               <div class="node-card">
-                <span class="node-name">${n.longname}</span><br>
-                <span class="node-id">${n.id}</span><br>
-                SNR: ${n.snr} &nbsp; Hops: ${n.hopsaway}<br>
-                Last: ${n.lastheardutc}
+                <span class="node-name">${escapeHtml(n.longname)}</span><br>
+                <span class="node-id">${escapeHtml(n.id)}</span><br>
+                SNR: ${escapeHtml(n.snr)} &nbsp; Hops: ${escapeHtml(n.hopsaway)}<br>
+                Last: ${escapeHtml(n.lastheardutc)}
               </div>`).join('');
           }
 
@@ -177,8 +268,71 @@ MAP_HTML = """<!DOCTYPE html>
         });
     }
 
+    function updateMessages() {
+      fetch('/api/messages')
+        .then(r => r.json())
+        .then(messages => {
+          const list = document.getElementById('messages');
+          if (messages.length === 0) {
+            list.innerHTML = '<div class="empty">No mesh messages yet.</div>';
+            return;
+          }
+          list.innerHTML = messages.map(m => {
+            const outbound = m.direction === 'outbound';
+            const name = outbound ? 'Web' : (m.longname || m.node_id || 'Mesh');
+            const target = m.to_id ? ` to ${escapeHtml(m.to_id)}` : '';
+            const channel = m.channel_index !== null && m.channel_index !== undefined ? ` ch ${escapeHtml(m.channel_index)}` : '';
+            return `<div class="message ${outbound ? 'outbound' : ''}">
+              <div class="message-meta">
+                <span class="message-name">${escapeHtml(name)}</span>${target}${channel}
+                <br>${escapeHtml(m.timestamputc || '')}
+              </div>
+              <div>${escapeHtml(m.text)}</div>
+            </div>`;
+          }).join('');
+        });
+    }
+
+    const destinationType = document.getElementById('destination-type');
+    const destinationNode = document.getElementById('destination-node');
+    destinationType.addEventListener('change', () => {
+      const isNode = destinationType.value === 'node';
+      destinationNode.disabled = !isNode;
+      if (!isNode) destinationNode.value = '';
+    });
+
+    document.getElementById('send-form').addEventListener('submit', event => {
+      event.preventDefault();
+      const status = document.getElementById('send-status');
+      const button = document.getElementById('send-button');
+      const payload = { message: document.getElementById('message').value };
+      if (destinationType.value === 'node') payload.destination = destinationNode.value;
+      status.textContent = 'Sending...';
+      button.disabled = true;
+      fetch('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+        .then(async r => {
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error || 'Could not send message');
+          document.getElementById('message').value = '';
+          status.textContent = 'Queued for mesh.';
+          updateMessages();
+        })
+        .catch(error => {
+          status.textContent = error.message;
+        })
+        .finally(() => {
+          button.disabled = false;
+        });
+    });
+
     updateMap();
+    updateMessages();
     setInterval(updateMap, 5000);
+    setInterval(updateMessages, 3000);
   </script>
 </body>
 </html>"""
@@ -197,6 +351,43 @@ def create_map_app():
             snapshot = list(all_nodes)
         return jsonify(snapshot)
 
+    @app.route('/api/messages', methods=['GET'])
+    def api_messages():
+        limit = request.args.get('limit', default=MAX_WEB_MESSAGES, type=int)
+        limit = max(1, min(limit, MAX_WEB_MESSAGES))
+        with messages_lock:
+            snapshot = list(mesh_messages[-limit:])
+        return jsonify(snapshot)
+
+    @app.route('/api/messages', methods=['POST'])
+    def api_send_message():
+        data = request.get_json(silent=True) or {}
+        text = str(data.get('message', '')).strip()
+        if not text:
+            return jsonify({'error': 'Message is required.'}), 400
+        if len(text) > 225:
+            return jsonify({'error': 'Message must be 225 characters or fewer.'}), 400
+
+        destination = data.get('destination')
+        if destination in ('', None):
+            destination = None
+        elif str(destination).isdigit():
+            destination = int(destination)
+        else:
+            return jsonify({'error': 'Destination node number must be numeric.'}), 400
+
+        discordtomesh.put(format_outbound_mesh_message(text, destination))
+        message = add_mesh_message({
+            'direction': 'outbound',
+            'source': 'web',
+            'longname': 'Web',
+            'node_id': 'web',
+            'to_id': str(destination) if destination is not None else '^all',
+            'channel_index': primary_mesh_channel_index if destination is None else None,
+            'text': text,
+        })
+        return jsonify({'status': 'queued', 'message': message}), 202
+
     @app.route('/')
     def index():
         return MAP_HTML
@@ -212,7 +403,7 @@ def start_map_server():
         daemon=True,
     )
     thread.start()
-    print('Map server started at http://0.0.0.0:8765')
+    print('Web bridge started at http://0.0.0.0:8765')
 
 
 class MyClient(discord.Client):
@@ -243,7 +434,7 @@ class MyClient(discord.Client):
                 "$activenodes will list all nodes seen in the last 15 minutes\n"\
                 "$nodeinfo <id> returns full details for a node by hex ID (e.g. !abc123) or node number\n"\
                 "Set DISCORD_SECONDARY_CHANNEL_ID to forward non-primary mesh messages to another Discord channel\n"\
-                "Node map available at http://<your-host>:8765"
+                "Web bridge available at http://<your-host>:8765"
             await message.channel.send(helpmessage)
 
         if message.content.startswith('$sendprimary'):
@@ -346,7 +537,7 @@ class MyClient(discord.Client):
                         snr = str(iface_nodes[node]['snr']) if 'snr' in iface_nodes[node] else 'N/A'
                         if 'lastHeard' in iface_nodes[node]:
                             ts = int(iface_nodes[node]['lastHeard'])
-                            timestr = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+                            timestr = datetime.fromtimestamp(ts, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
                         else:
                             ts = 0
                             timestr = 'Never'
